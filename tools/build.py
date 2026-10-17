@@ -11,17 +11,15 @@ import shutil
 import shlex
 import subprocess
 import sys
+import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = "dccb09599635bdff17633fa7e9dab014b91dce90"
 VERSION = "4.4.2"
 SDK_VERSION = "1.0.1"
-BOARDS = {
-    "qemu_x86_64": ("x86_64", "x86_64-zephyr-elf"),
-    "nrf52840dk/nrf52840": ("arm", "arm-zephyr-eabi"),
-    "esp32_devkitc/esp32/procpu": ("xtensa", "xtensa-espressif_esp32_zephyr-elf"),
-}
+TARGET_REGISTRY = json.loads((ROOT / "targets.v1.json").read_text())
+TARGETS = TARGET_REGISTRY["targets"]
 
 
 def run(*command, cwd=None, env=None):
@@ -70,8 +68,11 @@ def bootstrap(cache: Path):
         if ready.read_text().strip() != REVISION:
             raise ValueError("Source cache revision mismatch")
         sdk = cache / f"zephyr-sdk-{SDK_VERSION}"
-        run("west", "sdk", "install", "--version", SDK_VERSION, "--install-dir", sdk,
-            "--gnu-toolchains", *(tc for _, tc in BOARDS.values()), cwd=workspace / "zephyr", env=env)
+        sdk_ready = cache / "sdk-all-gnu-ready"
+        if not sdk_ready.exists():
+            run("west", "sdk", "install", "--version", SDK_VERSION, "--install-dir", sdk,
+                "--no-hosttools", cwd=workspace / "zephyr", env=env)
+            sdk_ready.write_text(SDK_VERSION + "\n")
     env.update(ZEPHYR_SDK_INSTALL_DIR=str(sdk), ZEPHYR_TOOLCHAIN_VARIANT="zephyr",
                ZEPHYR_BASE=str(workspace / "zephyr"), CMAKE_BUILD_PARALLEL_LEVEL=os.environ.get("JOBS", "4"))
     return workspace, env
@@ -114,18 +115,32 @@ def package(build: Path, config: dict, workspace: Path, env: dict, output: Path)
         flash_instructions = "Run these upstream-generated commands after extracting this ZIP (esptool 5.0.2):\n" + "\n".join(shlex.join(cmd) for cmd in commands) + "\n"
     elif config["board"] == "nrf52840dk/nrf52840":
         flash_instructions = "With a compatible debug probe connected, flash the address-bearing HEX file:\npyocd flash --target nrf52840 zephyr/zephyr.hex\n"
+    flash_instructions += "For other probes, reproduce the build and use west flash -d build. Retained runners.yaml and domains.yaml describe upstream flashing and image layout.\n"
     (staging / "README.txt").write_text(
         f"Zephyr {VERSION}, board {config['board']}, SDK {SDK_VERSION}\n"
         "Reproduce with this repository, build-config.json, the configuration/source files, and west-frozen.yml.\n"
         "Firmware is compiled; physical hardware operation requires a separate board test.\n"
         + flash_instructions + "The browser QEMU shell is an emulator, not a hardware test.\n")
-    architecture = BOARDS[config["board"]][0]
+    architecture = TARGETS[config["board"]]["architecture"]
+    # Each image keeps its own board/configuration, including heterogeneous sysbuild domains.
+    domains = []
+    for elf in sorted(staging.rglob("zephyr.elf")):
+        config_path = elf.parent / ".config"
+        values = dict(line.split("=", 1) for line in config_path.read_text().splitlines() if line.startswith("CONFIG_") and "=" in line)
+        domain_board = values["CONFIG_BOARD"].strip('"')
+        revision = values.get("CONFIG_BOARD_REVISION", '""').strip('"')
+        qualifier = values.get("CONFIG_BOARD_QUALIFIERS", '""').strip('"')
+        domain_target = domain_board + ("@" + revision if revision else "") + ("/" + qualifier if qualifier else "")
+        if domain_target not in TARGETS or not TARGETS[domain_target]["buildable"]:
+            raise ValueError(f"Unregistered domain target: {domain_target}")
+        domains.append({"elf": str(elf.relative_to(staging)), "config": str(config_path.relative_to(staging)),
+                        "board": domain_target, "architecture": TARGETS[domain_target]["architecture"]})
     files = {str(p.relative_to(staging)): sha256(p) for p in sorted(staging.rglob("*")) if p.is_file()}
     qemu = config["board"] == "qemu_x86_64"
     runtime = {"kernel": "zephyr/zephyr-qemu-locore.elf", "loader": "zephyr/zephyr-qemu-main.elf"} if qemu else None
     if runtime and not all(name in files for name in runtime.values()):
         raise ValueError("Missing QEMU companion images")
-    manifest = {"schema_version": 1, "zephyr_version": VERSION, "zephyr_revision": REVISION,
+    manifest = {"schema_version": 2, "domains": domains, "zephyr_version": VERSION, "zephyr_revision": REVISION,
                 "sdk_version": SDK_VERSION, "board": config["board"], "architecture": architecture,
                 "runtime": runtime, "files": files}
     (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -147,17 +162,26 @@ def main():
     parser.add_argument("--output", default="output")
     args = parser.parse_args()
     config = json.loads(inside(ROOT, args.config).read_text())
-    if config.get("board") not in BOARDS:
-        raise ValueError("Unsupported board")
+    target = TARGETS.get(config.get("board"))
+    if not target or not target["buildable"]:
+        raise ValueError(target["unavailable_reason"] if target else "Unknown pinned Zephyr target")
     cache = Path(args.cache).resolve() / VERSION
     workspace, env = bootstrap(cache)
-    application = config.get("application", "samples/hello_world")
+    # Re-discover with the pinned checkout instead of trusting a stale registry alone.
+    with tempfile.TemporaryDirectory(prefix="zephyr-targets-") as temporary:
+        discovered_path = Path(temporary) / "targets.json"
+        run(str(Path(env["PATH"].split(os.pathsep)[0]) / "python"),
+            str(ROOT / "tools/targets.py"), str(workspace / "zephyr"), "--output", discovered_path, env=env)
+        actual = json.loads(discovered_path.read_text())["targets"].get(config["board"])
+    if actual != target:
+        raise ValueError("Published target registry differs from the pinned checkout")
+    application = config.setdefault("application", target["default_application"])
     source = inside(workspace / "zephyr", application) if application.startswith("samples/") else inside(ROOT, application)
     if not (source / "CMakeLists.txt").is_file():
         raise ValueError("Application requires CMakeLists.txt")
     build = ROOT / "build"
     command = ["west", "build", "-p", "always", "-b", config["board"], "-d", str(build)]
-    if config["board"].startswith("esp32"):
+    if (target.get("sysbuild") if config.get("sysbuild") is None else config["sysbuild"]) or config["board"].startswith("esp32"):
         command.append("--sysbuild")
     command.extend([str(source), "--"])
     for key, cmake in (("kconfig_fragments", "EXTRA_CONF_FILE"), ("devicetree_overlays", "DTC_OVERLAY_FILE")):

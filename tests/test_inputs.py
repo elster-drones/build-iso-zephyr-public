@@ -15,4 +15,11 @@ class InputTests(unittest.TestCase):
             builder.inside(Path('/tmp/zephyr'), '/etc/passwd')
 
     def test_exact_supported_boards(self):
-        self.assertEqual(set(builder.BOARDS), {'qemu_x86_64', 'nrf52840dk/nrf52840', 'esp32_devkitc/esp32/procpu'})
+        self.assertGreater(len(builder.TARGETS), 2000)
+        self.assertEqual(builder.TARGET_REGISTRY['zephyr_revision'], builder.REVISION)
+        for board in ('qemu_x86_64', 'nrf52840dk/nrf52840', 'esp32_devkitc/esp32/procpu'):
+            self.assertTrue(builder.TARGETS[board]['buildable'])
+            self.assertEqual(builder.TARGETS[board]['default_application'], 'apps/playground')
+        for board in ('qemu_riscv32', 'qemu_riscv64', 'qemu_cortex_a53', 'rpi_pico/rp2040'):
+            self.assertTrue(builder.TARGETS[board]['buildable'])
+            self.assertEqual(builder.TARGETS[board]['default_application'], 'samples/hello_world')

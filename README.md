@@ -12,8 +12,13 @@ Use `top --once` for a snapshot; exit a live monitor with `q` then Enter or Ctrl
 The 64 KiB RAM filesystem survives terminal reconnects and resets on restart.
 Source and configuration are readable inside `/demo` and included in the bundle.
 
-Change `config/zephyr.json` to select `qemu_x86_64`, `nrf52840dk/nrf52840`, or
-`esp32_devkitc/esp32/procpu`. Use upstream `samples/...` or put a custom Zephyr
+Select an exact target from `targets.v1.json` (or the OpenFactory Hardware Catalog).
+The generated registry preserves qualifiers, revisions, aliases and toolchain
+availability. Regenerate it with the Zephyr venv using `python tools/targets.py
+/path/to/pinned/zephyr`. The builder revalidates the target against pinned upstream
+West/Twister discovery and provisions the upstream GNU SDK toolchains once per cache.
+The original three targets retain `apps/playground`; new targets default to
+`samples/hello_world`. `sysbuild` can explicitly select upstream multi-domain builds. Use upstream `samples/...` or put a custom Zephyr
 application in `app/` and select `"application": "app"`. Configuration fragments
 and devicetree overlays are paths relative to this checkout. Build outputs are
 isolated in `build/` and `output/`. `JOBS` defaults to 4.
