@@ -1,0 +1,8 @@
+/ {
+	playground_disk {
+		compatible = "zephyr,ram-disk";
+		disk-name = "PLAYGROUND";
+		sector-size = <512>;
+		sector-count = <128>;
+	};
+};

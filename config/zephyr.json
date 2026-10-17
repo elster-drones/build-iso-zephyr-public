@@ -1,6 +1,6 @@
 {
   "board": "qemu_x86_64",
-  "application": "samples/subsys/shell/shell_module",
+  "application": "apps/playground",
   "kconfig_fragments": [],
   "devicetree_overlays": []
 }
