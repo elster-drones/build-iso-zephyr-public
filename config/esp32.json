@@ -1,0 +1,6 @@
+{
+  "board": "esp32_devkitc/esp32/procpu",
+  "application": "samples/hello_world",
+  "kconfig_fragments": [],
+  "devicetree_overlays": []
+}

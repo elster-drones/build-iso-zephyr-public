@@ -1,0 +1,22 @@
+name: Zephyr firmware
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        config: [zephyr, nrf52840, esp32, custom]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y device-tree-compiler qemu-system-x86
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/openfactory/zephyr
+          key: zephyr-4.4.2-sdk-1.0.1-${{ runner.os }}-${{ hashFiles('west.yml', 'requirements-lock.txt') }}
+      - run: python3 -m unittest discover -s tests
+      - run: ./build.sh --config config/${{ matrix.config }}.json
+      - if: matrix.config == 'zephyr'
+        run: python3 tools/smoke.py build/zephyr

@@ -1,0 +1,6 @@
+{
+  "board": "nrf52840dk/nrf52840",
+  "application": "samples/hello_world",
+  "kconfig_fragments": [],
+  "devicetree_overlays": []
+}

@@ -1,0 +1,10 @@
+{
+  "board": "qemu_x86_64",
+  "application": "app",
+  "kconfig_fragments": [
+    "config/custom.conf"
+  ],
+  "devicetree_overlays": [
+    "config/custom.overlay"
+  ]
+}
