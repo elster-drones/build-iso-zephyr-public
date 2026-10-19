@@ -478,7 +478,8 @@ def run(bundle, contract, base, output):
     if contract["blocked_reason"]:
         report["message"] = contract["blocked_reason"]
         return report
-    firmware = output / "firmware"
+    workspace = Path(tempfile.mkdtemp(prefix="execution-", dir=output))
+    firmware = workspace / "firmware"
     read_bundle(bundle, firmware)
     launch = next(
         (s for s in contract["launches"] if shutil.which(s.get("exec") or s["name"])),
@@ -492,7 +493,7 @@ def run(bundle, contract, base, output):
         return report
     if launch["name"] == "native":
         inside(firmware, "zephyr/zephyr.exe").chmod(0o500)
-    engine = output / "engine"
+    engine = workspace / "engine"
     engine.mkdir(exist_ok=True)
     log_source = None
     try:
