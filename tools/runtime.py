@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import time
+import tempfile
 from types import SimpleNamespace
 import zipfile
 
@@ -149,8 +150,10 @@ def capture_runtime(build, staging, config, base, env):
             if proc.returncode or not proc.stdout.strip():
                 continue
             command = proc.stdout.strip().splitlines()[-1]
-        command = command.replace(str(build), "${FIRMWARE}").replace(
-            str(base), "${ZEPHYR_BASE}"
+        command = (
+            command.replace(str(build), "${FIRMWARE}")
+            .replace(str(base), "${ZEPHYR_BASE}")
+            .replace(str(build.parent), "${FIRMWARE}")
         )
         required = simulator.get("exec")
         if name == "qemu":
@@ -162,6 +165,9 @@ def capture_runtime(build, staging, config, base, env):
                 ),
                 None,
             )
+        if required and "/" in required:
+            command = command.replace(required, Path(required).name)
+            required = Path(required).name
         launches.append({**simulator, "exec": required, "command": command})
     descriptor = {
         "schema_version": 1,
@@ -204,6 +210,10 @@ def read_bundle(bundle, output=None):
                 path = inside(output, name)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
+        if "build-config.json" not in files:
+            raise ValueError(
+                "Build configuration is not covered by the integrity manifest"
+            )
         config = json.loads(z.read("build-config.json"))
         if config.get("board") != manifest.get("board"):
             raise ValueError("Firmware board metadata mismatch")
@@ -248,6 +258,28 @@ def describe(bundle, base):
             for s in simulators
             if s["name"] == "renode" and s.get("script") and s.get("uart")
         ]
+    allowed = {sim["name"]: sim for sim in simulators}
+    if profile:
+        allowed[profile["name"]] = profile
+    for launch in launches:
+        name = launch["name"]
+        if name not in allowed:
+            raise ValueError(
+                "Firmware declares a simulator outside its pinned board metadata"
+            )
+        executable = Path(launch.get("exec") or name).name
+        if name == "qemu" and not re.fullmatch(
+            r"qemu-system-[A-Za-z0-9_-]+", executable
+        ):
+            raise ValueError("Invalid QEMU executable")
+        if (
+            name not in ("native", "qemu")
+            and executable != Path(allowed[name].get("exec") or name).name
+        ):
+            raise ValueError(
+                "Simulator executable differs from the pinned board metadata"
+            )
+        launch["exec"] = executable
     contract = {
         "schema_version": 1,
         "artifact_sha256": digest(bundle),
@@ -294,7 +326,9 @@ def renode_command(profile, firmware, output, base):
     root = Path(executable).resolve().parent
     uart = output / "uart.log"
     script = output / "boot.resc"
-    version = subprocess.check_output([executable, "--version"], text=True).strip()
+    version = subprocess.check_output(
+        [executable, "--version"], text=True, timeout=10
+    ).strip()
     if profile.get("script"):
         upstream = inside(base, profile["script"])
         script.write_text(
@@ -330,7 +364,9 @@ def renode_command(profile, firmware, output, base):
     script.write_text(
         f'mach create "firmware"\nmachine LoadPlatformDescription @{repl}\nsysbus LoadELF @{firmware}/zephyr/zephyr.elf\n{profile["uart"]} CreateFileBackend @{uart}\nemulation RunFor "2"\nquit\n'
     )
-    version = subprocess.check_output([executable, "--version"], text=True).strip()
+    version = subprocess.check_output(
+        [executable, "--version"], text=True, timeout=10
+    ).strip()
     return (
         [executable, "--plain", "--console", "--disable-xwt", str(script)],
         uart,
@@ -369,6 +405,59 @@ def console_harness(test, base, output):
     return harness, instance
 
 
+def isolate(command, firmware, engine, base, executable):
+    """Keep untrusted firmware away from the trusted runner's reports and inputs."""
+    if not shutil.which("bwrap"):
+        raise FileNotFoundError("The firmware process sandbox is unavailable")
+    wrapper = [
+        "bwrap",
+        "--unshare-all",
+        "--die-with-parent",
+        "--new-session",
+        "--cap-drop",
+        "ALL",
+        "--clearenv",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--dir",
+        "/etc",
+    ]
+    for name in ("/usr", "/lib", "/lib64", "/bin", "/sbin"):
+        if Path(name).exists():
+            wrapper += ["--ro-bind", name, name]
+    for name in ("ld.so.cache", "localtime", "nsswitch.conf"):
+        path = "/etc/" + name
+        if Path(path).exists():
+            wrapper += ["--ro-bind", path, path]
+    roots = [ROOT, base.parent, Path(sys.executable).parent.parent]
+    if executable:
+        roots.append(Path(shutil.which(executable) or executable).resolve().parent)
+    if os.environ.get("ZEPHYR_SDK_INSTALL_DIR"):
+        roots.append(Path(os.environ["ZEPHYR_SDK_INSTALL_DIR"]))
+    for root in dict.fromkeys(roots):
+        wrapper += ["--ro-bind", str(root), str(root)]
+    for directory in (firmware, engine):
+        wrapper += ["--bind", str(directory), str(directory)]
+    wrapper += [
+        "--chdir",
+        str(firmware),
+        "--setenv",
+        "HOME",
+        "/tmp",
+        "--setenv",
+        "TMPDIR",
+        "/tmp",
+        "--setenv",
+        "PATH",
+        os.environ.get("PATH", "/usr/bin:/bin"),
+    ]
+    return wrapper + command
+
+
 def run(bundle, contract, base, output):
     expected = describe(bundle, base)
     if expected != contract:
@@ -401,13 +490,17 @@ def run(bundle, contract, base, output):
             message="Required simulator executable is unavailable on the test worker",
         )
         return report
+    if launch["name"] == "native":
+        inside(firmware, "zephyr/zephyr.exe").chmod(0o500)
+    engine = output / "engine"
+    engine.mkdir(exist_ok=True)
     log_source = None
     try:
         if launch["name"] == "renode":
             command, log_source, version = renode_command(
                 PROFILES[launch["profile"]] if launch.get("profile") else launch,
                 firmware,
-                output,
+                engine,
                 base,
             )
         else:
@@ -428,11 +521,15 @@ def run(bundle, contract, base, output):
             executable = launch.get("exec") or launch["name"]
             version = (
                 subprocess.check_output(
-                    [executable, "--version"], text=True, stderr=subprocess.STDOUT
+                    [executable, "--version"],
+                    text=True,
+                    stderr=subprocess.STDOUT,
+                    timeout=10,
                 )[:2048]
                 if launch["name"] != "native"
                 else "native host simulator"
             )
+        command = isolate(command, firmware, engine, base, launch.get("exec"))
         report.update(
             simulator=launch["name"],
             simulator_version=version,
@@ -512,7 +609,10 @@ def run(bundle, contract, base, output):
                         chunk = b""
                         if log_source:
                             if log_source.exists():
-                                with log_source.open("rb") as f:
+                                with os.fdopen(
+                                    os.open(log_source, os.O_RDONLY | os.O_NOFOLLOW),
+                                    "rb",
+                                ) as f:
                                     f.seek(offset)
                                     chunk = f.read(65536)
                                     offset += len(chunk)
@@ -571,8 +671,11 @@ def run(bundle, contract, base, output):
                         os.killpg(proc.pid, signal.SIGKILL)
                         proc.wait()
     except (OSError, ValueError, subprocess.SubprocessError) as e:
+        (output / "runner-errors.log").write_text(str(e))
         report.update(
-            status="error", failure_kind="infrastructure", message=str(e)[:1000]
+            status="error",
+            failure_kind="infrastructure",
+            message="The simulator could not execute this firmware; operator diagnostics are retained.",
         )
     if any(
         digest(inside(firmware, name)) != expected
@@ -584,16 +687,54 @@ def run(bundle, contract, base, output):
     return report
 
 
+def enrich(bundle, build, base):
+    """Attach launch inputs to a newly compiled, not-yet-published ZIP.
+
+    Existing authored worktrees may contain an older builder. Its compiler
+    output still gets the current trusted runtime bridge before platform signing.
+    This operation is never used on an already published immutable artifact.
+    """
+    manifest, config, descriptor = read_bundle(bundle)
+    if descriptor:
+        return
+    with tempfile.TemporaryDirectory(
+        prefix="firmware-runtime-", dir=bundle.parent
+    ) as temporary:
+        staging = Path(temporary)
+        read_bundle(bundle, staging)
+        env = {
+            **os.environ,
+            "PATH": str(Path(sys.executable).parent)
+            + os.pathsep
+            + os.environ.get("PATH", ""),
+        }
+        capture_runtime(build, staging, config, base, env)
+        path = staging / "runtime/launch.json"
+        manifest["files"]["runtime/launch.json"] = digest(path)
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        prepared = staging / "prepared.zip"
+        with zipfile.ZipFile(prepared, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name in [*manifest["files"], "manifest.json"]:
+                info = zipfile.ZipInfo(name, (2026, 8, 7, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = 0o100644 << 16
+                archive.writestr(info, inside(staging, name).read_bytes())
+        os.replace(prepared, bundle)
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("operation", choices=["describe", "run"])
+    p.add_argument("operation", choices=["describe", "run", "enrich"])
     p.add_argument("--bundle", type=Path, required=True)
     p.add_argument("--zephyr-base", type=Path, required=True)
+    p.add_argument("--build-dir", type=Path)
     p.add_argument("--contract", type=Path)
     p.add_argument("--output", type=Path)
     a = p.parse_args()
     init_twister(a.zephyr_base)
-    if a.operation == "describe":
+    if a.operation == "enrich":
+        enrich(a.bundle, a.build_dir, a.zephyr_base)
+    elif a.operation == "describe":
         print(json.dumps(describe(a.bundle, a.zephyr_base), sort_keys=True))
     else:
         result = run(

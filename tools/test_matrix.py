@@ -63,6 +63,41 @@ def main():
                 "Required simulator tool or vendor license is unavailable"
             )
             return result
+        if target["architecture"] == "posix":
+            if "_bsim" in target["board"] or "bsim" in target["board"]:
+                components = Path(
+                    env.get(
+                        "BSIM_COMPONENTS_PATH",
+                        str(base.parent / "tools/bsim/components"),
+                    )
+                )
+                if not components.exists():
+                    result["message"] = "BabbleSim runtime components are unavailable"
+                    return result
+            if not name.endswith("/64"):
+                import tempfile
+
+                with tempfile.TemporaryDirectory() as temporary:
+                    probe = subprocess.run(
+                        [
+                            "gcc",
+                            "-m32",
+                            "-x",
+                            "c",
+                            "-o",
+                            str(Path(temporary) / "probe"),
+                            "-",
+                        ],
+                        input="#include <stdlib.h>\nint main(void) {return 0;}\n",
+                        text=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                if probe.returncode:
+                    result["message"] = (
+                        "The native 32-bit host C library and development headers are unavailable"
+                    )
+                    return result
         try:
             build_dir = directory / "build"
             local_env = dict(env)
@@ -77,7 +112,7 @@ def main():
                             "west",
                             "build",
                             "-p",
-                            "always",
+                            "never" if args.reuse_builds else "always",
                             "-b",
                             name,
                             "-d",
@@ -122,7 +157,13 @@ def main():
         result["elapsed_seconds"] = round(time.monotonic() - start, 2)
         return result
 
-    results = []
+    report_path = args.output / "matrix.json"
+    previous = (
+        json.loads(report_path.read_text())
+        if args.target and report_path.exists()
+        else []
+    )
+    results = [row for row in previous if row["target"] not in targets]
     with ThreadPoolExecutor(max_workers=max(1, min(4, args.jobs))) as pool:
         futures = {
             pool.submit(exercise, name, target): name

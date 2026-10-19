@@ -66,3 +66,16 @@ def test_contract_cannot_switch_the_artifact_after_admission(tmp_path):
     contract["artifact_sha256"] = "0" * 64
     with pytest.raises(ValueError, match="contract changed"):
         runtime.run(path, contract, tmp_path, tmp_path / "evidence")
+
+
+def test_enrichment_preserves_delivered_executable_bytes(tmp_path):
+    path = bundle(tmp_path)
+    before, config, _ = runtime.read_bundle(path)
+    runtime.enrich(path, tmp_path / 'build', tmp_path)
+    after, current_config, descriptor = runtime.read_bundle(path)
+    assert after['files']['zephyr/zephyr.elf'] == before['files']['zephyr/zephyr.elf']
+    assert current_config == config
+    assert descriptor['board'] == before['board']
+    first_digest = runtime.digest(path)
+    runtime.enrich(path, tmp_path / 'build', tmp_path)
+    assert runtime.digest(path) == first_digest
