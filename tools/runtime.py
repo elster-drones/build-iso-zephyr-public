@@ -242,7 +242,7 @@ def describe(bundle, base):
             test = application_test(Path(d), config, base)
     profile = PROFILES.get(target)
     launches = runtime.get("launches") or []
-    if profile:
+    if profile and (profile["name"] == "renode" or not launches):
         launches = [
             {
                 "name": profile["name"],
