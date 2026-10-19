@@ -93,12 +93,16 @@ def application_test(staging, config, base):
     )
     if metadata is None:
         return None
-    data = yaml.safe_load(metadata.read_text())
-    # A variant requiring another build cannot test the bytes we already have.
-    candidates = [
-        (name, {**data.get("common", {}), **suite})
-        for name, suite in data.get("tests", {}).items()
-    ]
+    init_twister(base)
+    from twisterlib.config_parser import TwisterConfigParser
+
+    schema = yaml.safe_load(
+        (base / "scripts/schemas/twister/testsuite-schema.yaml").read_text()
+    )
+    parser = TwisterConfigParser(str(metadata), schema)
+    parser.load()
+    # Upstream owns common/variant merging and semantic normalization.
+    candidates = [(name, parser.get_scenario(name)) for name in parser.scenarios]
     candidates = [
         (name, suite)
         for name, suite in candidates
