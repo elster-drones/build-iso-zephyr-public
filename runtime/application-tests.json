@@ -1,0 +1,4 @@
+{
+  "apps/playground": {"id": "openfactory.playground.runtime", "script": "tools/smoke.py", "suite": "playground", "timeout": 150},
+  "samples/subsys/shell/shell_module": {"id": "sample.shell.runtime", "script": "tools/smoke.py", "suite": "shell", "timeout": 60}
+}

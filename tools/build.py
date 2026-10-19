@@ -85,7 +85,7 @@ def package(build: Path, config: dict, workspace: Path, env: dict, output: Path)
         shutil.rmtree(staging)
     staging.mkdir()
     # Preserve runner/domain-relative layout, including ESP32 bootloader images.
-    suffixes = {".elf", ".bin", ".hex", ".uf2", ".yaml", ".yml", ".json", ".dts", ".map"}
+    suffixes = {".elf", ".exe", ".bin", ".hex", ".uf2", ".yaml", ".yml", ".json", ".dts", ".map"}
     for path in build.rglob("*"):
         if staging in path.parents or not path.is_file() or path.is_symlink():
             continue
@@ -135,6 +135,8 @@ def package(build: Path, config: dict, workspace: Path, env: dict, output: Path)
             raise ValueError(f"Unregistered domain target: {domain_target}")
         domains.append({"elf": str(elf.relative_to(staging)), "config": str(config_path.relative_to(staging)),
                         "board": domain_target, "architecture": TARGETS[domain_target]["architecture"]})
+    from runtime import capture_runtime
+    capture_runtime(build, staging, config, workspace / "zephyr", env)
     files = {str(p.relative_to(staging)): sha256(p) for p in sorted(staging.rglob("*")) if p.is_file()}
     qemu = config["board"] == "qemu_x86_64"
     runtime = {"kernel": "zephyr/zephyr-qemu-locore.elf", "loader": "zephyr/zephyr-qemu-main.elf"} if qemu else None
@@ -188,8 +190,10 @@ def main():
         paths = [str(inside(ROOT, name)) for name in config.get(key, [])]
         if paths:
             command.append(f"-D{cmake}={';'.join(paths)}")
+    if target["architecture"] == "posix":
+        env["ZEPHYR_TOOLCHAIN_VARIANT"] = "host"
     run(*command, cwd=workspace, env=env)
-    if config["board"] == "qemu_x86_64":
+    if target["architecture"] == "x86_64":
         run("cmake", "--build", build, "--target", "qemu_kernel_target", env=env)
     package(build, config, workspace, env, inside(ROOT, args.output))
 

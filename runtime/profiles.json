@@ -1,0 +1,37 @@
+{
+  "96b_wistrio/stm32l151xba": {
+    "name": "renode",
+    "model": "platforms/cpus/stm32l151.repl",
+    "uart": "sysbus.usart1",
+    "sram_bytes": 32768,
+    "flash_bytes": 131072,
+    "systick_hz": 32000000,
+    "scope": "CPU boot and USART1 console; clock readiness is modeled. Radio, sensors, electrical behavior and physical hardware remain untested."
+  },
+  "qemu_x86_64": {
+    "name": "qemu",
+    "exec": "qemu-system-x86_64",
+    "argv": [
+      "qemu-system-x86_64",
+      "-machine",
+      "q35",
+      "-cpu",
+      "qemu64,+x2apic",
+      "-m",
+      "256",
+      "-smp",
+      "2",
+      "-display",
+      "none",
+      "-monitor",
+      "none",
+      "-serial",
+      "stdio",
+      "-kernel",
+      "${FIRMWARE}/zephyr/zephyr-qemu-locore.elf",
+      "-device",
+      "loader,file=${FIRMWARE}/zephyr/zephyr-qemu-main.elf"
+    ],
+    "scope": "Legacy published x86-64 QEMU split-image firmware; emulator runtime only."
+  }
+}
