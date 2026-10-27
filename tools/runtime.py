@@ -317,6 +317,10 @@ def describe(bundle, base):
         if not launches and not simulators
         else "The retained firmware lacks its upstream simulator launch inputs; rebuild this variant"
         if not launches
+        # Renode's UART is an output-only file backend; it cannot drive a serial session.
+        else "This target's emulator runs console-output tests only; interactive application tests are unavailable"
+        if test["harness"] == "application"
+        and all(launch["name"] == "renode" for launch in launches)
         else None
     )
     contract["contract_hash"] = payload_hash(contract)
@@ -327,50 +331,27 @@ def renode_command(profile, firmware, output, base):
     executable = shutil.which("renode")
     if not executable:
         raise FileNotFoundError("Renode is not installed on the test worker")
-    root = Path(executable).resolve().parent
     uart = output / "uart.log"
     script = output / "boot.resc"
     version = subprocess.check_output(
         [executable, "--version"], text=True, timeout=10
     ).strip()
     if profile.get("script"):
-        upstream = inside(base, profile["script"])
-        script.write_text(
-            f'$elf=@{firmware}/zephyr/zephyr.elf\ninclude @{upstream}\n{profile["uart"]} CreateFileBackend @{uart}\nemulation RunFor "2"\nquit\n'
-        )
-        return (
-            [executable, "--plain", "--console", "--disable-xwt", str(script)],
-            uart,
-            version,
-        )
-    source = root / profile["model"]
-    # The upstream STM32L151 model's fixed PLLRDY tag cannot model PLL disable.
-    # Use a board-owned ready/status model; never patch the delivered ELF.
-    model = (
-        source.read_text()
-        .replace("size: 0xC000", "size: 0x8000")
-        .replace("size:0x60000", "size:0x20000")
-    )
-    model = model.replace('        Tag <0x40023800 4> "RCC_CR" 0x2020202', "")
-    model = model.replace(
-        "https://dl.antmicro.com/projects/renode/svd/STM32L1xx.svd.gz",
-        str(ROOT / "runtime/wistrio/STM32L1xx.svd.gz"),
-    )
-    for name, address, filename in [
-        ("rccCr", "0x40023800", "rcc_cr.py"),
-        ("rccCfgr", "0x40023808", "rcc_cfgr.py"),
-    ]:
-        model += f'\n{name}: Python.PythonPeripheral @ sysbus {address}\n    size: 0x4\n    initable: true\n    filename: "{ROOT}/runtime/wistrio/{filename}"\n'
-    repl = output / "platform.repl"
-    repl.write_text(model)
-    uart = output / "uart.log"
-    script = output / "boot.resc"
+        load = f'$elf=@{firmware}/zephyr/zephyr.elf\ninclude @{inside(base, profile["script"])}\n'
+    else:
+        model = (Path(executable).resolve().parent / profile["model"]).read_text()
+        # Board-owned model corrections are profile data; never patch the delivered ELF.
+        runtime = str(ROOT / "runtime")
+        for old, new in profile.get("model_edits", []):
+            model = model.replace(old, new.replace("${RUNTIME}", runtime))
+        for name, address, filename in profile.get("python_peripherals", []):
+            model += f'\n{name}: Python.PythonPeripheral @ sysbus {address}\n    size: 0x4\n    initable: true\n    filename: "{inside(runtime, filename)}"\n'
+        repl = output / "platform.repl"
+        repl.write_text(model)
+        load = f'mach create "firmware"\nmachine LoadPlatformDescription @{repl}\nsysbus LoadELF @{firmware}/zephyr/zephyr.elf\n'
     script.write_text(
-        f'mach create "firmware"\nmachine LoadPlatformDescription @{repl}\nsysbus LoadELF @{firmware}/zephyr/zephyr.elf\n{profile["uart"]} CreateFileBackend @{uart}\nemulation RunFor "2"\nquit\n'
+        load + f'{profile["uart"]} CreateFileBackend @{uart}\nemulation RunFor "2"\nquit\n'
     )
-    version = subprocess.check_output(
-        [executable, "--version"], text=True, timeout=10
-    ).strip()
     return (
         [executable, "--plain", "--console", "--disable-xwt", str(script)],
         uart,

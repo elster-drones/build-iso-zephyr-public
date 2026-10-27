@@ -3,10 +3,26 @@
     "name": "renode",
     "model": "platforms/cpus/stm32l151.repl",
     "uart": "sysbus.usart1",
+    "model_edits": [
+      ["size: 0xC000", "size: 0x8000"],
+      ["size:0x60000", "size:0x20000"],
+      ["        Tag <0x40023800 4> \"RCC_CR\" 0x2020202", ""],
+      ["https://dl.antmicro.com/projects/renode/svd/STM32L1xx.svd.gz", "${RUNTIME}/wistrio/STM32L1xx.svd.gz"]
+    ],
+    "python_peripherals": [
+      ["rccCr", "0x40023800", "wistrio/rcc_cr.py"],
+      ["rccCfgr", "0x40023808", "wistrio/rcc_cfgr.py"]
+    ],
     "sram_bytes": 32768,
     "flash_bytes": 131072,
     "systick_hz": 32000000,
-    "scope": "CPU boot and USART1 console; clock readiness is modeled. Radio, sensors, electrical behavior and physical hardware remain untested."
+    "scope": "CPU boot and USART1 console; clock readiness is modeled because the upstream STM32L151 fixed PLLRDY tag cannot model PLL disable. Radio, sensors, electrical behavior and physical hardware remain untested."
+  },
+  "nrf52840dk/nrf52840": {
+    "name": "renode",
+    "model": "platforms/boards/nrf52840dk_nrf52840.repl",
+    "uart": "sysbus.uart0",
+    "scope": "Upstream Renode nRF52840 DK model: CPU boot and UARTE0 console. Radio, USB, QSPI flash, electrical behavior and physical hardware remain untested."
   },
   "qemu_x86_64": {
     "name": "qemu",
